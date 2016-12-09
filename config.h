@@ -1,0 +1,14 @@
+char server[] = "58.62.247.115";
+char username[] ="";//should be changed
+char password[] ="";
+char CONTROLCHECKSTATUS=0x20;
+char ADAPTERNUM=0x04;
+unsigned char host_ip[]={116,56,7,147};
+char ipdog=0x01;
+char host_name[]="LoveSy";
+unsigned char PRIMARY_DNS[]={202,96,128,166};
+unsigned char dhcp_server[]={222,202,171,33};
+char AUTH_VERSION[] = {0x2b,0x00};
+uint64_t mac = 0xf0761c9f5ffd;
+char host_os[]="NOTE7";
+char KEEP_ALIVE_VERSION[]={0xdc,0x02};
