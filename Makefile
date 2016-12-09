@@ -1,2 +1,2 @@
 CC = gcc
-$(CC) -static main.c md5.c -odrcom
+$(CC) -static -lws2_32 main.c md5.c -odrcom
