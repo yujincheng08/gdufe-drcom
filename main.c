@@ -37,7 +37,19 @@ void decode(unsigned char *data,int offset,int len)
     printf("\n");
 }
 
-void challenge(char srv[], int ran, char* recv_data)
+int isTimeout()
+{
+#ifdef __unix
+    if(errno==EAGAIN)
+#endif
+#ifdef _WIN32
+    if(WSAGetLastError()==WSAETIMEDOUT)
+#endif
+        return 1;
+    return 0;
+}
+
+int challenge(char srv[], int ran, char* recv_data)
 {
     
     unsigned char send_data[20]={0};
@@ -46,52 +58,64 @@ void challenge(char srv[], int ran, char* recv_data)
     send_data[2]=(unsigned char)(ran % 0xFFFF);
     send_data[3]=(unsigned char)((ran % 0xFFFF) >> 8);
     send_data[4]=0x09;
-    decode(send_data,0,20);
     struct sockaddr_in addr, address;
     int addr_len = sizeof(address);
     addr.sin_family = AF_INET;
     addr.sin_port = htons(61440);
     addr.sin_addr.s_addr = inet_addr(srv);
     unsigned char data[1024];
-    int ret;
-    while(1)
+    int ret,i=0;
+    fprintf(stdout,"[challenge]send:\n");
+    decode(send_data,0,20);
+    for(i=0;i<10;i++)
     {
+        fprintf(stdout,"[challenge]Trying to fetch challenge data for the %d time(s).\n",i+1);
         if(sendto(sock,send_data,20,0,(struct sockaddr *)&addr,sizeof(addr))<20)
         {
-            fprintf(stderr, "[challenge]: send challenge data failed.\n");
-#ifdef __unix
-            if(errno==EAGAIN)
-#endif
-#ifdef _WIN32
-            if(WSAGetLastError()==WSAETIMEDOUT)
-#endif
-                fprintf(stdout,"[challenge]send timeout, retrying...");
+            fprintf(stderr, "[challenge]send: Challenge data failed.\n");
+            if(isTimeout())
+                fprintf(stderr,"[challenge]send: Timeout.\n");
+            sleep(30);
+            fprintf(stdout,"[challenge]Retrying...\n");
             continue;
         }
         
         ret = recvfrom(sock,data,1024,0,(struct sockaddr *)&address,&addr_len);
         if(ret==-1)
         {
-            fprintf(stderr, "[challenge]recive challenge data failed: %d.\n",errno);
-            if(errno==EAGAIN)
-                fprintf(stdout,"[challenge]recive timeout, retrying...\n");
+            fprintf(stderr, "[challenge]recv: Challenge data failed.\n");
+            if(isTimeout())
+                fprintf(stderr,"[challenge]recv: Timeout.\n");
+            sleep(30);
+            fprintf(stdout,"[challenge]Retrying...\n");
             continue;
         }
         if(memcmp(((struct sockaddr *)&addr)->sa_data,((struct sockaddr *)&address)->sa_data,6)==0)
             break;
         else
-            fprintf(stderr, "[challenge]address recived failed, retrying...\n");
+        {
+            fprintf(stderr, "[challenge]recv: Address recived failed.\n");
+            sleep(30);
+            fprintf(stdout,"[challenge]Retrying...\n");
+        }
     }
-    fprintf(stdout,"[challenge]:\n");
+    if(i==10)
+    {
+        fprintf(stderr,"[challenge]Trying for 10 times. Terminate.\n");
+        return 0;
+    }
+    fprintf(stdout,"[challenge]Recv:\n");
     decode(data,0,ret);
     if(data[0]!=0x02)
     {
-        fprintf(stderr, "[challenge]data recived failed\n");
-        exit(1);
+        fprintf(stderr, "[challenge]Data recived failed.\n");
+        sleep(30);
+        fprintf(stdout,"[challenge]Retrying...\n");
     }
-    fprintf(stdout,"[challenge]challenge packet sent.\n");
+    fprintf(stdout,"[challenge]Challenge packet successfully sent.\n");
     
     memcpy(recv_data,data+4,4);
+    return 1;
 }
 
 void mkpkt(char salt[], char usr[], char pwd[], uint64_t mac, unsigned char *packet)
@@ -193,24 +217,22 @@ void create_socket()
 #ifdef _WIN32
     WSADATA wsa={0};
     WSAStartup(MAKEWORD(2,2),&wsa);
-#endif
-    sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0)
-    {
-        fprintf(stderr, "[drcom]: create sock failed.\n");
-        exit(1);
-    }
-#ifdef _WIN32
     int timeout=3000;
 #endif
 #ifdef __unix
     struct timeval timeout={3,0};
 #endif
+    sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0)
+    {
+        fprintf(stderr, "[drcom]Fatal error: Create sock failed.\n");
+        exit(1);
+    }
     setsockopt(sock,SOL_SOCKET,SO_SNDTIMEO,(const char*)&timeout,sizeof(timeout));
     setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,(const char*)&timeout,sizeof(timeout));
 }
 
-void login(char usr[], char pwd[], char svr[], char recv_data[])
+int login(char usr[], char pwd[], char svr[], char recv_data[])
 {
     unsigned char packet[330]={0};
     struct sockaddr_in addr, address;
@@ -220,74 +242,72 @@ void login(char usr[], char pwd[], char svr[], char recv_data[])
     addr.sin_addr.s_addr = inet_addr(svr);
     unsigned char data[1024];
     int i=0,ret;
-    while(1)
+    fprintf(stdout,"[login]Trying to login.\n");
+    for(i=0;i<10;i++)
     {
-        time_t rawtime;
-        time (&rawtime);
-        challenge(svr,(unsigned)time(0)+rand()%0xF0 + 0xF,salt);
+        fprintf(stdout,"[login]Trying to login for the %d time(s).\n",i+1);
+        if(!challenge(svr,(unsigned)time(0)+rand()%0xF0 + 0xF,salt))
+            continue;
+        fprintf(stdout,"[login]Making packet.\n");
         mkpkt(salt,username,password,mac,packet);
-        fprintf(stdout,"[login] send ");
+        fprintf(stdout,"[login]send:\n");
         decode(packet,0,330);
         if(sendto(sock,packet,330,0,(struct sockaddr *)&addr,sizeof(addr))<330)
         {
-            fprintf(stderr, "[login]: send data failed.\n");
-#ifdef __unix
-            if(errno==EAGAIN)
-#endif
-#ifdef _WIN32
-            if(WSAGetLastError()==WSAETIMEDOUT)
-#endif
-                fprintf(stdout,"[login]send timeout, retrying...");
+            fprintf(stderr, "[login]send: Data failed.\n");
+            if(isTimeout())
+                fprintf(stderr,"[login]send: Timeout.\n");
+            sleep(30);
+            fprintf(stdout,"[login]send: Retrying...\n");
             continue;
         }
         
         ret = recvfrom(sock,data,1024,0,(struct sockaddr *)&address,&addr_len);
         if(ret==-1)
         {
-            fprintf(stderr, "[challenge]recive challenge data failed.\n");
-#ifdef __unix
-            if(errno==EAGAIN)
-#endif
-#ifdef _WIN32
-            if(WSAGetLastError()==WSAETIMEDOUT)
-#endif
-                fprintf(stdout,"[challenge]recive timeout, retrying...\n");
+            fprintf(stderr, "[login]recv: Recive data failed.\n");
+            if(isTimeout())
+                fprintf(stderr,"[login]recv: Timeout.\n");
+            fprintf(stdout,"[login]recv: Retrying...\n");
+            sleep(30);
             continue;
         }
         if(memcmp(((struct sockaddr *)&addr)->sa_data,((struct sockaddr *)&address)->sa_data,6)==0)
         {
             if(data[0]==0x04)
             {
-                fprintf(stdout,"[login]loged in\n");
+                fprintf(stdout,"[login]Loged in successfully.\n");
                 break;
             }
             else
             {
-                fprintf(stderr,"[login] login failed.\n");
+                fprintf(stderr,"[login]Login failed.\n");
                 sleep(30);
-                fprintf(stdout,"[login] retrying...\n");
+                fprintf(stdout,"[login]Retrying...\n");
                 continue;
             }
         }
-        else if(i>=0)
-        {
-            fprintf(stderr, "[login] exception occured.\n");
-            exit(1);
-        }
         else
         {
-            fprintf(stderr,"[login] login failed.\n");
+            fprintf(stderr,"[login]Login failed.\n");
             sleep(30);
-            fprintf(stdout,"[login] retrying...\n");
+            fprintf(stdout,"[login]Retrying...\n");
             continue;
         }
     }
-    fprintf(stdout,"[login] login sent\n");
+    if(i==10)
+    {
+        fprintf(stderr,"[login]Trying for 10 times. Terminate.\n");
+        return 0;
+    }
+    fprintf(stdout,"[login]Login data sent.\n");
     memcpy(recv_data,data+23,16);
+    return 1;
 }
 
-void keep_alive1(char salt[],char tail[],char pwd[],char svr[])
+int keep_alive1(char salt[],char tail[],char pwd[],char svr[])
 {
+    fprintf(stdout,"[keep_alive1]Trying to Keep alive1.\n");
     unsigned char md5buff[1000],md5str[16],send_data[42]={0};    
     size_t md5len;
     md5len = 6 +strlen(pwd);
@@ -303,52 +323,51 @@ void keep_alive1(char salt[],char tail[],char pwd[],char svr[])
     int now = (int)time(0)%0xFFFF;
     send_data[36]=now/256;
     send_data[37]=now;
-    fprintf(stdout,"[keep_alive1] send ");
+    fprintf(stdout,"[keep_alive1]send:\n");
     decode(send_data,0,42);
     struct sockaddr_in addr;
     addr.sin_family = AF_INET;
     addr.sin_port = htons(61440);
     addr.sin_addr.s_addr = inet_addr(svr);
     unsigned char data[1024];
-    int ret=42;
-    while(1)
+    int ret=42,i=0;
+    for(i=0;i<10;i++)
     {
+        fprintf(stdout,"[keep_alive1]Trying for the %i time(s).\n",i+1);
         if(sendto(sock,send_data,42,0,(struct sockaddr *)&addr,sizeof(addr))<42)
         {
-            fprintf(stderr, "[challenge]: send challenge data failed.\n");
-#ifdef __unix
-            if(errno==EAGAIN)
-#endif
-#ifdef _WIN32
-            if(WSAGetLastError()==WSAETIMEDOUT)
-#endif
-                fprintf(stdout,"[challenge]send timeout, retrying...");
+            fprintf(stderr, "[keep_alive1]send: Send data failed.\n");
+            if(isTimeout())
+                fprintf(stderr,"[keep_alive1]send: Timeout.\n");
+            sleep(30);
+            fprintf(stdout,"[keep_alive1]Retrying...\n");
             continue;
         }
-        
         ret = recvfrom(sock,data,1024,0,NULL,NULL);
         if(ret==-1)
         {
-            fprintf(stderr, "[challenge]recive challenge data failed.\n");
-#ifdef __unix
-            if(errno==EAGAIN)
-#endif
-#ifdef _WIN32
-            if(WSAGetLastError()==WSAETIMEDOUT)
-#endif
-                fprintf(stdout,"[challenge]recive timeout, retrying...\n");
+            fprintf(stderr, "[keep_alive1]recv: Recive data failed.\n");
+            if(isTimeout())
+                fprintf(stderr,"[keep_alive1]recv: Timeout.\n");
+            sleep(30);
+            fprintf(stdout,"[keep_alive1]Retrying...\n");
             continue;
         }
+        fprintf(stdout,"[keep-alive1]recv:\n");
+        decode(data,0,ret);
         if(data[0]==0x07)
         {
-            fprintf(stdout,"[keep-alive1] recv ");
-            decode(data,0,ret);
+            fprintf(stdout,"[keep_alive1]Success.\n");
             break;
         }
         else
-            fprintf(stderr,"[keep-alive1]recv/not expected\n");
+        {
+            fprintf(stderr,"[keep-alive1]recv: Unexpected.\n");
+            sleep(30);
+            fprintf(stdout,"[keep_alive1]Retrying...\n");
+        }
     }
-    
+    return i!=10;
 }
 
 
@@ -382,191 +401,211 @@ void keep_alive2(char salt[],char _tail[],char pwd[],char svr[])
     addr.sin_port = htons(61440);
     addr.sin_addr.s_addr = inet_addr(svr);
     unsigned char data[1024]={0};
-    int ret=40;
+    int ret=40,i=0;
+    fprintf(stdout,"[keep-alive2]Making keep alive2 packet(%d,1,1).\n",svr_num);
     keep_alive_package_builder(svr_num,emptytail,packet,1,1);
-    while(1)
+    fprintf(stdout,"[keep-alive2]send1:\n");
+    decode(packet,0,40);
+    for(i=0;i<10;i++)
     {
-        fprintf(stdout,"[keep-alive2] send1 ");
-        decode(packet,0,40);
+        fprintf(stdout,"[keep-alive2]send1:Trying for the %i time(s).\n",i+1);
         if(sendto(sock,packet,40,0,(struct sockaddr *)&addr,sizeof(addr))<40)
         {
-            fprintf(stderr, "[keep-alive2] send1: send challenge data failed.\n");
-#ifdef __unix
-            if(errno==EAGAIN)
-#endif
-#ifdef _WIN32
-            if(WSAGetLastError()==WSAETIMEDOUT)
-#endif
-                fprintf(stdout,"[keep-alive2] send1 timeout, retrying...");
+            fprintf(stderr, "[keep-alive2]send1: Send data failed.\n");
+            if(isTimeout())
+                fprintf(stderr,"[keep-alive2]send1: Timeout.\n");
+            sleep(30);
+            fprintf(stdout,"[keep_alive2]send1: Retrying...\n");
             continue;
         }
-        
         ret = recvfrom(sock,data,1024,0,NULL,NULL);
         if(ret==-1)
         {
-            fprintf(stderr, "[keep-alive2] recv1 challenge data failed.\n");
-#ifdef __unix
-            if(errno==EAGAIN)
-#endif
-#ifdef _WIN32
-            if(WSAGetLastError()==WSAETIMEDOUT)
-#endif
-                fprintf(stdout,"[keep-alive2] recv1 timeout, retrying...\n");
+            fprintf(stderr, "[keep-alive2]recv1: Recive data failed.\n");
+            if(isTimeout())
+                fprintf(stderr,"[keep-alive2]recv1: Timeout.\n");
+            sleep(30);
+            fprintf(stdout,"[keep_alive2]recv1: Retrying...\n");
             continue;
         }
-        fprintf(stdout,"[keep-alive2] recv1 ");
+        fprintf(stdout,"[keep-alive2]recv1:\n");
         decode(data,0,ret);
         if(*data ==0x07 && data[1]==0x00 && data[2] == 0x28 && data[3]==0x00)
+        {
+            fprintf(stdout,"[keep-alive2]Success1.\n");
             break;
+        }
         else if(*data == 0x07 && data[1]==(unsigned char)svr_num && data[2]==0x28 && data[3]==0x00)
+        {
+            fprintf(stdout,"[keep-alive2]Success1.\n");
             break;
+        }
         else if(*data ==0x07 && data[2] == 0x10)
         {
-            fprintf(stdout,"[keep-alive2] recv1 file, resending..\n");
-            svr_num = svr_num + 1;
+            fprintf(stdout,"[keep-alive2]recv1: Recive file, skip.\n");
+            svr_num ++;
             break;
         }
         else
-            fprintf(stderr,"[keep-alive2] recv1/unexpected\n");
+        {
+            fprintf(stderr,"[keep-alive2]recv1: Unexpected.\n");
+            sleep(30);
+            fprintf(stdout,"[keep_alive2]Retrying...\n");
+        }
     }
+    if(i==10) return;
+    fprintf(stdout,"[keep-alive2]Making keep alive2 packet(%d,1,0).\n",svr_num);
     keep_alive_package_builder(svr_num,emptytail,packet,1,0);
-    fprintf(stdout,"[keep-alive2] send2 ");
+    fprintf(stdout,"[keep-alive2]send3:\n");
     decode(packet,0,40);
-    while(1)
-    {
-        if(sendto(sock,packet,40,0,(struct sockaddr *)&addr,sizeof(addr))<40)
-        {
-            fprintf(stderr, "[keep-alive2] send2 data failed.\n");
-#ifdef __unix
-            if(errno==EAGAIN)
-#endif
-#ifdef _WIN32
-            if(WSAGetLastError()==WSAETIMEDOUT)
-#endif
-                fprintf(stdout,"[keep-alive2] send2 timeout, retrying...");
-            continue;
-        }
-        break;
-    }
-    while(1)
+    sendto(sock,packet,40,0,(struct sockaddr *)&addr,sizeof(addr));
+    for(i=0;i<10;i++)
     {
         ret = recvfrom(sock,data,1024,0,NULL,NULL);
         if(ret==-1)
         {
-            fprintf(stderr, "[keep-alive2]recv2 data failed.\n");
-#ifdef __unix
-            if(errno==EAGAIN)
-#endif
-#ifdef _WIN32
-            if(WSAGetLastError()==WSAETIMEDOUT)
-#endif
-                fprintf(stdout,"[keep-alive2]recv2 timeout, retrying...\n");
+            fprintf(stderr, "[keep-alive2]recv2: Recive data failed.\n");
+            if(isTimeout())
+                fprintf(stderr,"[keep-alive2]recv2: Timeout.\n");
+            sleep(30);
+            fprintf(stdout,"[keep_alive2]recv2: Retrying...\n");
             continue;
         }
+        fprintf(stdout,"[keep-alive2]recv2:\n");
+        decode(data,0,ret);
         if(data[0]==0x07)
         {
+            fprintf(stdout,"[keep-alive2]Success2.\n");
             svr_num++;
             break;
         }
         else
         {
-            fprintf(stderr,"[keep-alive2] recv2/unexpected\n");
-            decode(data,0,ret);
+            fprintf(stderr,"[keep-alive2]recv2: Unexpected.\n");
+            sleep(30);
+            fprintf(stdout,"[keep_alive2]recv2: Retrying...\n");
         }
     }
-    fprintf(stdout,"[keep-alive2] recv2 ");
-    decode(data,0,ret);
+    if(i==10) return;
     memcpy(tail,data+16,4);
+    fprintf(stdout,"[keep-alive2]Making keep alive2 packet(%d,3,0).\n",svr_num);
     keep_alive_package_builder(svr_num,tail,packet,3,0);
-    fprintf(stdout,"[keep-alive2] send3 ");
+    fprintf(stdout,"[keep-alive2]send3:\n");
     decode(packet,0,40);
-    while(1)
-    {
-        if(sendto(sock,packet,40,0,(struct sockaddr *)&addr,sizeof(addr))<40)
-        {
-            fprintf(stderr, "[keep-alive2] send3 data failed.\n");
-#ifdef __unix
-            if(errno==EAGAIN)
-#endif
-#ifdef _WIN32
-            if(WSAGetLastError()==WSAETIMEDOUT)
-#endif
-                fprintf(stdout,"[keep-alive2] send3 timeout, retrying...");
-            continue;
-        }
-        break;
-    }
-    
-    while(1)
+    sendto(sock,packet,40,0,(struct sockaddr *)&addr,sizeof(addr));
+    for(i=0;i<10;i++)
     {
         ret = recvfrom(sock,data,1024,0,NULL,NULL);
         if(ret==-1)
         {
-            fprintf(stderr, "[keep-alive2]recv3 data failed.\n");
-#ifdef __unix
-            if(errno==EAGAIN)
-#endif
-#ifdef _WIN32
-            if(WSAGetLastError()==WSAETIMEDOUT)
-#endif
-                fprintf(stdout,"[keep-alive2]recv3 timeout, retrying...\n");
+            fprintf(stderr, "[keep-alive2]recv3: Recive data failed.\n");
+            if(isTimeout())
+                fprintf(stderr,"[keep-alive2]recv3: Timeout.\n");
+            sleep(30);
+            fprintf(stdout,"[keep_alive2]recv3: Retrying...\n");
             continue;
         }
+        fprintf(stdout,"[keep-alive2]recv3:\n");
+        decode(data,0,ret);
         if(data[0]==0x07)
         {
+            fprintf(stdout,"[keep-alive2]Success3.\n");
             svr_num++;
             break;
         }
         else
         {
-            fprintf(stderr,"[keep-alive2] recv3/unexpected\n");
-            decode(data,0,ret);
+            fprintf(stderr,"[keep-alive2]recv3: Unexpected.\n");
+            sleep(30);
+            fprintf(stdout,"[keep_alive2]recv3: Retrying...\n");
         }
     }
-    fprintf(stdout,"[keep-alive2] recv3 ");
-    decode(data,0,ret);
+    if(i==10) return;
     memcpy(tail,data+16,4);
-    fprintf(stdout,"[keep-alive2] keep-alive2 loop was in daemon ");
-    
-    int i = svr_num;
+    fprintf(stdout,"[keep-alive2]keep alive2 loop was in daemon.\n");
     while(1)
     {
         sleep(20);
-        keep_alive1(salt,_tail,pwd,svr);
-        keep_alive_package_builder(i,tail,packet,1,0);
-        sendto(sock,packet,40,0,(struct sockaddr *)&addr,sizeof(addr));
-        fprintf(stdout,"[keep-alive2] send ");
+        fprintf(stdout,"[keep-alive2]Trying to keep-alive.\n");
+        if(!keep_alive1(salt,_tail,pwd,svr))
+        {
+            fprintf(stderr,"[keep_alive1]Trying for 10 times. Terminate.\n");
+            break;
+        }
+        fprintf(stdout,"[keep-alive2]Making keep alive2 packet(%d,1,0).\n",svr_num);
+        keep_alive_package_builder(svr_num,tail,packet,1,0);
+        fprintf(stdout,"[keep-alive2]send:\n");
         decode(packet,0,40);
-        recvfrom(sock,data,1024,0,NULL,NULL);
-        fprintf(stdout,"[keep-alive2] recv ");
-        decode(data,0,ret);
-        memcpy(tail,data+16,4);
-
-        keep_alive_package_builder(i+1,tail,packet,3,0);
         sendto(sock,packet,40,0,(struct sockaddr *)&addr,sizeof(addr));
-        fprintf(stdout,"[keep-alive2] send ");
-        decode(packet,0,40);
-        recvfrom(sock,data,1024,0,NULL,NULL);
-        fprintf(stdout,"[keep-alive2] recv ");
+        ret = recvfrom(sock,data,1024,0,NULL,NULL);
+        if(ret==-1)
+        {
+            fprintf(stderr, "[keep-alive2]recv: Recive data failed.\n");
+            if(isTimeout())
+                fprintf(stderr,"[keep-alive2]recv: Timeout.\n");
+            fprintf(stdout,"[keep_alive2]recv2: Retrying...\n");
+            continue;
+        }
+        fprintf(stdout,"[keep-alive2]recv:\n");
         decode(data,0,ret);
+        if(data[0]!=0x07)
+        {
+            fprintf(stderr,"[keep-alive2]recv: Unexpected.\n");
+            break;
+        }
         memcpy(tail,data+16,4);
-        i=(i+2)%0xFF;
+        
+        fprintf(stdout,"[keep-alive2]Making keep alive2 packet(%d,3,0).\n",svr_num+1);
+        keep_alive_package_builder(svr_num+1,tail,packet,3,0);
+        fprintf(stdout,"[keep-alive2]send:\n");
+        decode(packet,0,40);
+        sendto(sock,packet,40,0,(struct sockaddr *)&addr,sizeof(addr));
+        recvfrom(sock,data,1024,0,NULL,NULL);
+        if(ret==-1)
+        {
+            fprintf(stderr, "[keep-alive2]recv: Recive data failed.\n");
+            if(isTimeout())
+                fprintf(stderr,"[keep-alive2]recv: Timeout.\n");
+            fprintf(stdout,"[keep_alive2]recv2: Retrying...\n");
+            continue;
+        }
+        fprintf(stdout,"[keep-alive2]recv:\n");
+        decode(data,0,ret);
+        if(data[0]!=0x07)
+        {
+            fprintf(stderr,"[keep-alive2]recv: Unexpected.\n");
+            break;
+        }
+        memcpy(tail,data+16,4);
+        svr_num=(svr_num+2)%0xFF;
     }
 }
 
 int main()
 {
+    setlinebuf(stdout);
     fprintf(stdout,"auth svr: %s\nusername: %s\n"
-                    "password: %s\nmac:%x",
+                    "password: %s\nmac:%llx\n",
                     server,username,password,mac);
     unsigned char package_tail[16]={0};
     create_socket();
     while(1)
     {
-        login(username,password,server,package_tail);
-        keep_alive1(salt,package_tail,password,server);
+        if(!login(username,password,server,package_tail))
+            continue;
+        if(!keep_alive1(salt,package_tail,password,server))
+        {
+            fprintf(stderr,"[keep_alive1]Trying for 10 times. Terminate.\n");
+            sleep(30);
+            fprintf(stdout,"[drcom]Retrying...\n");
+            continue;
+        }
         keep_alive2(salt,package_tail,password,server);
+        fprintf(stderr,"[keep_alive2]Keep alive2 failed.\n");
+        sleep(30);
+        fprintf(stdout,"[drcom]Retrying...\n");
+        continue;
     }
-    
+    return 0;
 
 }
