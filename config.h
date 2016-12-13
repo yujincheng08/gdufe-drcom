@@ -13,3 +13,9 @@ char AUTH_VERSION[] = {0x2b,0x00};
 
 char host_os[]="NOTE7";
 char KEEP_ALIVE_VERSION[]={0xdc,0x02};
+
+char logPath[] = "drcom_client.log";
+char bind_ip[] = "0.0.0.0";
+
+int isTest = 1;
+char nic_name[] = "";
